@@ -8,9 +8,17 @@ BASE="$MYSQL_HOME/mysql-8.4.7-macos15-arm64"
 CNF="$MYSQL_HOME/my.cnf"
 SOCK="$MYSQL_HOME/mysql.sock"
 PIDFILE="$MYSQL_HOME/mysqld.pid"
+ROOT_PW_FILE="$MYSQL_HOME/.root_password"
+
+# root 密码由安装时随机生成，存于 600 权限文件，不在脚本里硬编码
+root_pw() {
+  cat "$ROOT_PW_FILE" 2>/dev/null || echo ""
+}
 
 is_running() {
-  [ -S "$SOCK" ] && "$BASE/bin/mysqladmin" --defaults-file="$CNF" -uroot --connect-timeout=3 ping >/dev/null 2>&1
+  [ -S "$SOCK" ] || return 1
+  "$BASE/bin/mysqladmin" --defaults-file="$CNF" -uroot -p"$(root_pw)" \
+    --connect-timeout=3 ping >/dev/null 2>&1
 }
 
 case "${1:-status}" in
@@ -20,7 +28,8 @@ case "${1:-status}" in
       exit 0
     fi
     echo "正在启动 MySQL ..."
-    "$BASE/bin/mysqld_safe" --defaults-file="$CNF" >/dev/null 2>&1 &
+    nohup "$BASE/bin/mysqld_safe" --defaults-file="$CNF" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
     for _ in $(seq 1 30); do
       sleep 1
       if is_running; then
@@ -36,21 +45,22 @@ case "${1:-status}" in
       echo "MySQL 未在运行。"
       exit 0
     fi
-    "$BASE/bin/mysqladmin" --defaults-file="$CNF" -uroot shutdown 2>/dev/null \
+    "$BASE/bin/mysqladmin" --defaults-file="$CNF" -uroot -p"$(root_pw)" shutdown 2>/dev/null \
       || kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
     echo "已停止。"
     ;;
   status)
     if is_running; then
       echo "运行中："
-      "$BASE/bin/mysql" --defaults-file="$CNF" -uroot -e "SELECT VERSION() AS version, @@port AS port;"
+      "$BASE/bin/mysql" --defaults-file="$CNF" -uroot -p"$(root_pw)" \
+        -e "SELECT VERSION() AS version, @@port AS port;" 2>/dev/null
     else
       echo "未运行。用 bash scripts/mysql_ctl.sh start 启动。"
       exit 1
     fi
     ;;
   shell)
-    exec "$BASE/bin/mysql" --defaults-file="$CNF" -uroot ai_saas_analytics
+    exec "$BASE/bin/mysql" --defaults-file="$CNF" -uroot -p"$(root_pw)" ai_saas_analytics
     ;;
   *)
     echo "用法: $0 {start|stop|status|shell}" >&2
