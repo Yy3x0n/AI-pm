@@ -1,0 +1,35 @@
+# 凭证与本地配置
+.env
+
+# 虚拟环境
+.venv/
+venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 系统与编辑器
+.DS_Store
+.vscode/
+.idea/
+
+# 原始数据与派生产物（体积大、可重新生成，不入库）
+data/raw/
+data/processed/
+data/generated/
+output/
+
+# Tableau 本地产物
+*.hyper
+*.twb~
+*.twbx
+*.tdsx
+
+# 工作区工具目录
+.workbuddy/
+
+# Notebook 输出检查点
+.ipynb_checkpoints/

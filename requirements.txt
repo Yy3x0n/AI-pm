@@ -1,0 +1,32 @@
+# 运行环境：Python 3.12.14（VS Code 已配置的 /Users/yy3x0n/pyenv/bin/python）
+# 以下版本为本机实测通过的最低版本，安装命令：
+#   /Users/yy3x0n/pyenv/bin/python -m pip install -r requirements.txt \
+#       -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 数据处理
+pandas>=3.0
+numpy>=2.0
+
+# 统计与实验分析
+scipy>=1.18
+statsmodels>=0.15
+
+# MySQL 连接
+sqlalchemy>=2.1
+pymysql>=1.2
+# PyMySQL 连接 MySQL 8.x 默认认证插件 caching_sha2_password 时必需
+cryptography>=42
+
+# 配置与 HTTP
+python-dotenv>=1.2
+requests>=2.34
+
+# 可视化（仅用于辅助自查，正式看板在 Tableau）
+matplotlib>=3.11
+
+# Notebook
+jupyter>=1.0
+ipykernel>=6.29
+
+# 测试
+pytest>=9.0
