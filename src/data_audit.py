@@ -79,6 +79,24 @@ FIELD_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "is_reactivation": "该事件是否为再激活（回流）",
         "feedback_text": "客户反馈原文",
     },
+    "ai_request_logs": {
+        "request_id": "请求唯一标识（主键，模拟）",
+        "account_id": "发起请求的组织客户（外键到 accounts）",
+        "request_date": "请求日期",
+        "feature_name": "功能标识，复用原始数据的通用功能名",
+        "input_tokens": "输入 token 数",
+        "output_tokens": "输出 token 数",
+        "latency_ms": "响应耗时（毫秒）",
+        "request_status": "请求状态：success / error / timeout",
+        "estimated_cost": "估算成本（美元），按 config/ai_pricing.json 的模拟费率计算，不是真实账单",
+    },
+    "ab_test_onboarding": {
+        "user_id": "实验样本编号（主键，非真实成员 ID）",
+        "experiment_group": "分组：control 或 treatment",
+        "assigned_at": "进入实验的时间",
+        "activated": "是否完成激活，目标指标",
+        "retained_d7": "7 日后是否留存，护栏指标",
+    },
 }
 
 
@@ -89,7 +107,56 @@ GRANULARITY = {
     "feature_usage": "一行一条「订阅 × 日期 × 功能」的日粒度使用记录，注意本表无 account_id",
     "support_tickets": "一行一张客服工单",
     "churn_events": "一行一次流失事件，同一组织可有多条（含再激活）",
+    "ai_request_logs": "一行一次 AI 请求（模拟数据），请求级粒度",
+    "ab_test_onboarding": "一行一个实验样本（模拟数据），样本级粒度",
 }
+
+
+def dictionary_table_lines(
+    table_name: str,
+    frame: pd.DataFrame,
+    spec: dict,
+    profile: pd.DataFrame,
+    date_info: dict[str, tuple],
+) -> list[str]:
+    """生成单张表的字典段落，供原始表与模拟表共用。"""
+    lines = [f"## {table_name}（`{spec['file']}`）", ""]
+    lines.append(f"- 粒度：{GRANULARITY[table_name]}")
+    lines.append(f"- 主键：`{spec['primary_key']}`")
+    lines.append(f"- 行数：{len(frame)}")
+    lines.append("")
+
+    rows = []
+    for _, row in profile.iterrows():
+        column = row["column"]
+        if column in date_info:
+            dtype_label = "date"
+            low, high = date_info[column]
+            value_label = f"{low:%Y-%m-%d} ~ {high:%Y-%m-%d}" if pd.notna(low) else "-"
+        elif str(row["dtype"]).startswith(("int", "float")):
+            dtype_label = str(row["dtype"])
+            if str(row["dtype"]).startswith("int"):
+                value_label = f"{int(row['min'])} ~ {int(row['max'])}"
+            else:
+                value_label = f"{row['min']} ~ {row['max']}"
+        else:
+            dtype_label = str(row["dtype"])
+            value_label = row["sample_values"]
+
+        rows.append(
+            [
+                column,
+                dtype_label,
+                f"{(100 - row['null_rate_pct']):.1f}%",
+                row["unique_count"],
+                value_label,
+                row["description"],
+            ]
+        )
+
+    lines.append(md_table(["字段", "类型", "非空率", "唯一值数", "取值范围/样例", "含义"], rows))
+    lines.append("")
+    return lines
 
 
 def md_table(headers: list[str], rows: list[list[object]]) -> str:
@@ -300,7 +367,34 @@ def specific_checks(frames: dict[str, pd.DataFrame]) -> list[tuple[str, str]]:
         )
     )
 
-    # 6. 工单未关闭情况
+    # 6. 同一组织在观察日是否同时有多条活跃订阅。这决定时点 MRR 能否直接加总
+    starts = pd.to_datetime(subs["start_date"], errors="coerce")
+    ends = pd.to_datetime(subs["end_date"], errors="coerce")
+    observation_date = starts.max()
+    active_mask = (starts <= observation_date) & (ends.isna() | (ends >= observation_date))
+    active_subs = subs.loc[active_mask]
+    per_account_active = active_subs.groupby("account_id").size()
+    naive_total = float(active_subs["mrr_amount"].sum())
+    deduped_total = float(
+        active_subs.assign(_order=starts[active_mask])
+        .sort_values("_order")
+        .groupby("account_id")["mrr_amount"]
+        .last()
+        .sum()
+    )
+    findings.append(
+        (
+            "同一组织并发活跃订阅",
+            f"以数据最后一天 {observation_date:%Y-%m-%d} 为观察日，{len(active_subs)} 条订阅处于活跃状态，覆盖 {len(per_account_active)} 个组织；"
+            f"单个组织同时活跃的订阅数中位数 {per_account_active.median():.0f} 条、最多 {int(per_account_active.max())} 条。"
+            f"直接加总全部活跃订阅的 MRR 得 {naive_total:,.0f}，按组织只取最新一条生效订阅汇总得 {deduped_total:,.0f}，"
+            f"前者是后者的 {naive_total / deduped_total:.1f} 倍。"
+            "结论：本数据集的订阅记录更接近订阅历史而非并行合同，客户层级的 MRR 必须按组织去重（取最新一条生效订阅），"
+            "直接加总会把同一组织的多次订阅重复计入。",
+        )
+    )
+
+    # 7. 工单未关闭情况
     if {"closed_at", "resolution_time_hours"}.issubset(tickets.columns):
         open_tickets = int(tickets["closed_at"].isna().sum())
         open_with_hours = int((tickets["closed_at"].isna() & tickets["resolution_time_hours"].notna()).sum())
@@ -312,7 +406,7 @@ def specific_checks(frames: dict[str, pd.DataFrame]) -> list[tuple[str, str]]:
             )
         )
 
-    # 7. 客户级流失标记与流失事件表是否一致
+    # 8. 客户级流失标记与流失事件表是否一致
     churn_flag_accounts = set(
         accounts.loc[accounts["churn_flag"].astype(str).isin(["1", "True", "true"]), "account_id"]
     )
@@ -330,7 +424,7 @@ def specific_checks(frames: dict[str, pd.DataFrame]) -> list[tuple[str, str]]:
         )
     )
 
-    # 8. 满意度空值，直接影响平均值的分母
+    # 9. 满意度空值，直接影响平均值的分母
     if "satisfaction_score" in tickets.columns:
         null_sat = int(tickets["satisfaction_score"].isna().sum())
         findings.append(
@@ -340,7 +434,7 @@ def specific_checks(frames: dict[str, pd.DataFrame]) -> list[tuple[str, str]]:
             )
         )
 
-    # 9. feature_usage 的覆盖情况
+    # 10. feature_usage 的覆盖情况
     usage_subs = int(usage["subscription_id"].nunique())
     findings.append(
         (
@@ -350,7 +444,7 @@ def specific_checks(frames: dict[str, pd.DataFrame]) -> list[tuple[str, str]]:
         )
     )
 
-    # 10. 是否存在完全重复的使用记录
+    # 11. 是否存在完全重复的使用记录
     subset = [c for c in ["subscription_id", "usage_date", "feature_name"] if c in usage.columns]
     if subset:
         dup_usage = int(usage.duplicated(subset=subset).sum())
@@ -384,6 +478,13 @@ def main() -> None:
                 "memory_kb": round(df.memory_usage(deep=True).sum() / 1024, 1),
             }
         )
+
+    # 两张模拟表：存在则一并审计，不存在则跳过（阶段 2 之前还没生成）
+    synthetic_frames = {
+        name: pd.read_csv(config.synthetic_table_path(name))
+        for name in config.SYNTHETIC_TABLES
+        if config.synthetic_table_path(name).exists()
+    }
 
     # 逐字段画像
     profiles = pd.concat(
@@ -552,10 +653,61 @@ def main() -> None:
     report.append(
         "3. `feature_usage.usage_id` 存在 ID 碰撞，不得作为唯一键；去重与计数以 (subscription_id, usage_date, feature_name) 或行号为准。"
     )
-    report.append("4. 计算时点 MRR 需限定订阅生效区间，避免把同一组织的多条订阅简单相加。")
+    report.append(
+        "4. 客户层级 MRR 必须按组织去重（每个组织取最新一条生效订阅），直接加总活跃订阅会把同一组织的多次订阅重复计入，"
+        "在观察日被放大 8 倍以上。若确实需要订阅口径的 MRR，必须在指标名中写明「订阅口径」。"
+    )
     report.append("5. 解决时长、响应时长、满意度的均值需说明分母（未关闭工单、无评分工单如何处理）。")
     report.append("6. 原始数据未做任何清洗；清洗规则与前后行数变化在阶段 2 记录。")
     report.append("")
+
+    # ---- 模拟数据审计（如已生成）----
+    if synthetic_frames:
+        report.append("## 10. 模拟数据审计（synthetic）")
+        report.append("")
+        report.append(
+            "> 以下两张表由本项目脚本生成，**不是真实业务数据**，仅用于演示对应分析方法。"
+            "字段与产出必须始终标注 synthetic。"
+        )
+        report.append("")
+        synthetic_rows = []
+        for name, frame in synthetic_frames.items():
+            spec = config.SYNTHETIC_TABLES[name]
+            key = spec["primary_key"]
+            synthetic_rows.append(
+                [
+                    name,
+                    f"{len(frame):,}",
+                    spec["file"],
+                    int(frame[key].duplicated().sum()),
+                    int(frame[key].isna().sum()),
+                ]
+            )
+        report.append(md_table(["表", "行数", "文件", "主键重复", "主键空值"], synthetic_rows))
+        report.append("")
+
+        if "ab_test_onboarding" in synthetic_frames:
+            experiment = synthetic_frames["ab_test_onboarding"]
+            counts = experiment["experiment_group"].value_counts()
+            report.append(
+                f"- A/B 实验分组："
+                + "，".join(f"{group} {count} 人" for group, count in counts.items())
+                + f"，合计 {len(experiment)} 人。样本比例是否失衡由阶段 5 的 SRM 检验判定。"
+            )
+        if "ai_request_logs" in synthetic_frames:
+            logs = synthetic_frames["ai_request_logs"]
+            report.append(
+                f"- AI 请求日志：日期范围 {logs['request_date'].min()} ~ {logs['request_date'].max()}，"
+                f"覆盖 {logs['account_id'].nunique()} 个组织客户，成功率 {(logs['request_status'] == 'success').mean():.2%}。"
+            )
+            report.append(
+                "- 估算成本按 `config/ai_pricing.json` 的模拟费率计算，**不是真实账单**；费率变更后需重新生成。"
+            )
+        report.append("")
+        report.append(
+            "生成参数、注入的异常窗口与固定随机种子记录在 `docs/synthetic_data.md`，分析代码不得读取生成参数来输出结论。"
+        )
+        report.append("")
 
     audit_path = config.DOCS_DIR / "data_audit.md"
     audit_path.write_text("\n".join(report), encoding="utf-8")
@@ -569,48 +721,44 @@ def main() -> None:
     dictionary.append("- 字段含义依据字段命名与数据表现归纳；标注为「待确认」的字段不做业务解释")
     dictionary.append("")
     for table_name, spec in config.TABLES.items():
-        subset = profiles[profiles["table"] == table_name]
-        date_ranges = {
-            item["column"]: (item["min"], item["max"]) for item in dates[table_name] if item.get("exists")
-        }
-        dictionary.append(f"## {table_name}（`{spec['file']}`）")
-        dictionary.append("")
-        dictionary.append(f"- 粒度：{GRANULARITY[table_name]}")
-        dictionary.append(f"- 主键：`{spec['primary_key']}`")
-        dictionary.append(f"- 行数：{len(frames[table_name])}")
-        dictionary.append("")
-
-        rows = []
-        for _, row in subset.iterrows():
-            column = row["column"]
-            if column in date_ranges:
-                dtype_label = "date"
-                low, high = date_ranges[column]
-                value_label = f"{low:%Y-%m-%d} ~ {high:%Y-%m-%d}" if pd.notna(low) else "-"
-            elif str(row["dtype"]).startswith(("int", "float")):
-                dtype_label = str(row["dtype"])
-                if str(row["dtype"]).startswith("int"):
-                    value_label = f"{int(row['min'])} ~ {int(row['max'])}"
-                else:
-                    value_label = f"{row['min']} ~ {row['max']}"
-            else:
-                dtype_label = str(row["dtype"])
-                value_label = row["sample_values"]
-            rows.append(
-                [
-                    column,
-                    dtype_label,
-                    f"{(100 - row['null_rate_pct']):.1f}%",
-                    row["unique_count"],
-                    value_label,
-                    row["description"],
-                ]
+        dictionary.extend(
+            dictionary_table_lines(
+                table_name=table_name,
+                frame=frames[table_name],
+                spec=spec,
+                profile=profiles[profiles["table"] == table_name],
+                date_info={
+                    item["column"]: (item["min"], item["max"])
+                    for item in dates[table_name]
+                    if item.get("exists")
+                },
             )
+        )
 
+    if synthetic_frames:
+        dictionary.append("## 模拟数据（synthetic）")
+        dictionary.append("")
         dictionary.append(
-            md_table(["字段", "类型", "非空率", "唯一值数", "取值范围/样例", "含义"], rows)
+            "> 本节两张表**不是真实企业数据**，由 `src/generate_ai_request_logs.py` 与 "
+            "`src/generate_ab_test_data.py` 按固定随机种子生成。"
+            "生成逻辑与注入的异常窗口见 `docs/synthetic_data.md`。"
         )
         dictionary.append("")
+        for name, frame in synthetic_frames.items():
+            spec = config.SYNTHETIC_TABLES[name]
+            dictionary.extend(
+                dictionary_table_lines(
+                    table_name=name,
+                    frame=frame,
+                    spec=spec,
+                    profile=profile_columns(name, frame),
+                    date_info={
+                        item["column"]: (item["min"], item["max"])
+                        for item in profile_dates(frame, spec["date_columns"])
+                        if item.get("exists")
+                    },
+                )
+            )
 
     (config.DOCS_DIR / "data_dictionary.md").write_text("\n".join(dictionary), encoding="utf-8")
 

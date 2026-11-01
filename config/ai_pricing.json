@@ -1,0 +1,9 @@
+{
+  "_note": "以下单价为项目设定的【模拟费率】，不代表任何厂商的真实计费标准，也不代表本项目的真实账单。修改本文件后需重新生成 ai_request_logs.csv 与分析结果。",
+  "currency": "USD",
+  "unit": "per_1m_tokens",
+  "input_token_price": 0.3,
+  "output_token_price": 1.2,
+  "source": "synthetic",
+  "updated_at": "2026-11-01"
+}

@@ -85,6 +85,22 @@ TABLES = {
     },
 }
 
+# 两张模拟表的登记信息。所有字段与产出都必须标注 synthetic，不得与真实数据混称。
+SYNTHETIC_TABLES = {
+    "ai_request_logs": {
+        "file": "ai_request_logs.csv",
+        "primary_key": "request_id",
+        "date_columns": ["request_date"],
+        "key_columns": ["request_status", "feature_name"],
+    },
+    "ab_test_onboarding": {
+        "file": "ab_test_onboarding.csv",
+        "primary_key": "user_id",
+        "date_columns": ["assigned_at"],
+        "key_columns": ["experiment_group", "activated", "retained_d7"],
+    },
+}
+
 # 外键检查：子表字段 -> (父表, 父表字段)
 FOREIGN_KEYS = [
     ("subscriptions", "account_id", "accounts", "account_id"),
@@ -97,6 +113,11 @@ FOREIGN_KEYS = [
 def table_path(table_name: str) -> Path:
     """返回某张原始表的本地路径。"""
     return DATA_RAW / TABLES[table_name]["file"]
+
+
+def synthetic_table_path(table_name: str) -> Path:
+    """返回某张模拟表的本地路径。"""
+    return DATA_GENERATED / SYNTHETIC_TABLES[table_name]["file"]
 
 
 def get_db_url() -> URL:

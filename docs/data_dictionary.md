@@ -1,6 +1,6 @@
 # 数据字典
 
-- 生成时间：2026-10-30 17:58:54
+- 生成时间：2026-11-01 12:35:30
 - 所有表均为公开合成数据（RavenStack），非真实企业数据
 - 字段含义依据字段命名与数据表现归纳；标注为「待确认」的字段不做业务解释
 
@@ -98,3 +98,39 @@
 | preceding_downgrade_flag | bool | 100.0% | 2 | False; True | 流失前是否发生降级 |
 | is_reactivation | bool | 100.0% | 2 | False; True | 该事件是否为再激活（回流） |
 | feedback_text | str | 75.3% | 3 | switched to competitor; missing features; too expensive | 客户反馈原文 |
+
+## 模拟数据（synthetic）
+
+> 本节两张表**不是真实企业数据**，由 `src/generate_ai_request_logs.py` 与 `src/generate_ab_test_data.py` 按固定随机种子生成。生成逻辑与注入的异常窗口见 `docs/synthetic_data.md`。
+
+## ai_request_logs（`ai_request_logs.csv`）
+
+- 粒度：一行一次 AI 请求（模拟数据），请求级粒度
+- 主键：`request_id`
+- 行数：37490
+
+| 字段 | 类型 | 非空率 | 唯一值数 | 取值范围/样例 | 含义 |
+|---|---|---|---|---|---|
+| request_id | str | 100.0% | 37490 | R-0004399; R-0033453; R-0029690 | 请求唯一标识（主键，模拟） |
+| account_id | str | 100.0% | 499 | A-6843f2; A-d27f50; A-b2225d | 发起请求的组织客户（外键到 accounts） |
+| request_date | date | 100.0% | 731 | 2023-01-01 ~ 2024-12-31 | 请求日期 |
+| feature_name | str | 100.0% | 40 | feature_5; feature_13; feature_26 | 功能标识，复用原始数据的通用功能名 |
+| input_tokens | int64 | 100.0% | 8321 | 294 ~ 28410 | 输入 token 数 |
+| output_tokens | int64 | 100.0% | 2232 | 91 ~ 7873 | 输出 token 数 |
+| latency_ms | int64 | 100.0% | 2496 | 178 ~ 8233 | 响应耗时（毫秒） |
+| request_status | str | 100.0% | 3 | success; error; timeout | 请求状态：success / error / timeout |
+| estimated_cost | float64 | 100.0% | 4109 | 0.0004 ~ 0.0105 | 估算成本（美元），按 config/ai_pricing.json 的模拟费率计算，不是真实账单 |
+
+## ab_test_onboarding（`ab_test_onboarding.csv`）
+
+- 粒度：一行一个实验样本（模拟数据），样本级粒度
+- 主键：`user_id`
+- 行数：7524
+
+| 字段 | 类型 | 非空率 | 唯一值数 | 取值范围/样例 | 含义 |
+|---|---|---|---|---|---|
+| user_id | str | 100.0% | 7524 | EXP-000001; EXP-000002; EXP-000003 | 实验样本编号（主键，非真实成员 ID） |
+| experiment_group | str | 100.0% | 2 | control; treatment | 分组：control 或 treatment |
+| assigned_at | date | 100.0% | 720 | 2024-09-01 ~ 2024-09-30 | 进入实验的时间 |
+| activated | int64 | 100.0% | 2 | 0 ~ 1 | 是否完成激活，目标指标 |
+| retained_d7 | int64 | 100.0% | 2 | 0 ~ 1 | 7 日后是否留存，护栏指标 |
